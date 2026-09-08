@@ -22,6 +22,10 @@ from PySide6.QtWidgets import (
 
 from app.models.usb_device import ConnectionStatus, USBDevice
 
+# Sentinel imported here so the list widget can identify the virtual row
+# without creating a circular dependency on main_window.
+_KEYBOARD_DEVICE_ID = "__keyboard_controller__"
+
 _COLUMNS = ["", "Device Name", "Category", "VID", "PID", "Status"]
 _COL_DOT = 0
 _COL_NAME = 1
@@ -134,11 +138,21 @@ class DeviceListWidget(QWidget):
     # ------------------------------------------------------------------
 
     def _populate_row(self, row: int, device: USBDevice) -> None:
-        colour_hex = _STATUS_COLOURS.get(device.status, "#90A4AE")
-        colour = QColor(colour_hex)
+        is_keyboard = (device.device_id == _KEYBOARD_DEVICE_ID)
 
-        # Dot indicator
-        dot = QTableWidgetItem("●")
+        if is_keyboard:
+            # Virtual keyboard entry gets a distinct purple colour and italic font
+            colour     = QColor("#CBA6F7")          # Catppuccin mauve / purple
+            dot_char   = "⌨"
+            status_txt = "Available"
+        else:
+            colour_hex = _STATUS_COLOURS.get(device.status, "#90A4AE")
+            colour     = QColor(colour_hex)
+            dot_char   = "●"
+            status_txt = device.status.value
+
+        # Dot / icon indicator
+        dot = QTableWidgetItem(dot_char)
         dot.setForeground(colour)
         dot.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         dot.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
@@ -148,7 +162,11 @@ class DeviceListWidget(QWidget):
         name_item = QTableWidgetItem(name_text)
         name_font = QFont()
         name_font.setBold(True)
+        if is_keyboard:
+            name_font.setItalic(True)
         name_item.setFont(name_font)
+        if is_keyboard:
+            name_item.setForeground(colour)
         name_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
         self._table.setItem(row, _COL_NAME, name_item)
 
@@ -156,11 +174,13 @@ class DeviceListWidget(QWidget):
             (_COL_CAT,    device.category or "Unknown"),
             (_COL_VID,    device.vendor_id or "—"),
             (_COL_PID,    device.product_id or "—"),
-            (_COL_STATUS, device.status.value),
+            (_COL_STATUS, status_txt),
         ):
             item = QTableWidgetItem(text)
             item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-            if col == _COL_STATUS:
+            if is_keyboard:
+                item.setForeground(colour)
+            elif col == _COL_STATUS:
                 item.setForeground(colour)
             self._table.setItem(row, col, item)
 

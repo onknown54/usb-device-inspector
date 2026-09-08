@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.models.device_details import DeviceDetails
-from app.models.usb_device import USBDevice
+from app.models.usb_device import ConnectionStatus, USBDevice
 from app.services.device_service import DeviceService
 from app.services.scanning_service import ScanSignals
 from app.ui.device_details import DeviceDetailsWidget
@@ -43,6 +43,25 @@ from app.ui.event_log import EventLogWidget
 from app.ui.scan_dialog import ScanDialog
 from app.usb.usb_constants import DeviceCategory
 from app.utils.logger import get_logger
+
+# Sentinel device_id that identifies the virtual "Keyboard Controller" entry.
+_KEYBOARD_DEVICE_ID = "__keyboard_controller__"
+
+
+def _make_keyboard_device() -> USBDevice:
+    """Return a virtual USBDevice representing keyboard-only (Option B) input."""
+    return USBDevice(
+        device_id=_KEYBOARD_DEVICE_ID,
+        name="⌨  Keyboard Controller  (Option B)",
+        manufacturer="Built-in",
+        description="Use the computer keyboard to fly the drone simulator. "
+                    "No physical controller required.",
+        vendor_id=None,
+        product_id=None,
+        category=DeviceCategory.GAME_CONTROLLER.value,
+        status=ConnectionStatus.CONNECTED,
+        connected=True,
+    )
 
 logger = get_logger(__name__)
 
@@ -293,7 +312,17 @@ class MainWindow(QMainWindow):
     def _on_devices_changed(self) -> None:
         previous_id = self._selected_device.device_id if self._selected_device else None
         devices = self._service.all_devices()
-        self._device_list.refresh(devices)
+
+        # Inject the virtual keyboard entry at the top when no real
+        # game controller is in the list.
+        has_real_controller = any(
+            d.category == DeviceCategory.GAME_CONTROLLER.value for d in devices
+        )
+        display_devices: list[USBDevice] = list(devices)
+        if not has_real_controller:
+            display_devices.insert(0, _make_keyboard_device())
+
+        self._device_list.refresh(display_devices)
         self._update_status()
         # Restore selection if the device is still present.
         if previous_id:
@@ -327,21 +356,32 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _on_device_selected(self, device: USBDevice) -> None:
         self._selected_device = device
-        self._inspect_btn.setEnabled(True)
-        self._scan_btn.setEnabled(True)
 
-        # Show "Test Controller Live" and "Drone Simulator" only for Game Controller
-        is_controller = device.category == DeviceCategory.GAME_CONTROLLER.value
-        self._test_btn.setVisible(is_controller)
-        self._test_btn.setEnabled(is_controller)
+        is_keyboard_virtual = (device.device_id == _KEYBOARD_DEVICE_ID)
+        is_controller = (device.category == DeviceCategory.GAME_CONTROLLER.value)
+
+        # Inspect / Scan only make sense for real hardware devices
+        self._inspect_btn.setEnabled(not is_keyboard_virtual)
+        self._scan_btn.setEnabled(not is_keyboard_virtual)
+
+        # "Test Controller Live" only for real game controllers
+        self._test_btn.setVisible(is_controller and not is_keyboard_virtual)
+        self._test_btn.setEnabled(is_controller and not is_keyboard_virtual)
+
+        # "Drone Simulator" for real controllers AND the keyboard virtual device
         self._drone_btn.setVisible(is_controller)
         self._drone_btn.setEnabled(is_controller)
 
-        self._set_status(
-            f"{device.name or device.device_id}  |  "
-            f"{device.category}  |  "
-            f"VID: {device.vendor_id or '—'}  PID: {device.product_id or '—'}"
-        )
+        if is_keyboard_virtual:
+            self._set_status(
+                "⌨  Keyboard Controller  |  Click '✈ Drone Simulator' to fly with keyboard"
+            )
+        else:
+            self._set_status(
+                f"{device.name or device.device_id}  |  "
+                f"{device.category}  |  "
+                f"VID: {device.vendor_id or '—'}  PID: {device.product_id or '—'}"
+            )
 
     # ------------------------------------------------------------------
     # Button handlers
@@ -462,6 +502,28 @@ class MainWindow(QMainWindow):
     def _open_drone_simulator(self, device: USBDevice) -> None:
         """Extract scan-time HID info and launch DroneSimulatorWindow."""
         from app.ui.drone_simulator import DroneSimulatorWindow
+
+        # Virtual keyboard device — launch directly in keyboard mode,
+        # no HID scan data needed.
+        if device.device_id == _KEYBOARD_DEVICE_ID:
+            win = DroneSimulatorWindow(
+                device=device,
+                scan_axes=["X Axis", "Y Axis", "Rz (Z Rotation)", "Slider"],
+                button_count=7,
+                has_hat=False,
+                keyboard_mode=True,
+                parent=None,
+            )
+            win.setStyleSheet(self.styleSheet())
+            win.show()
+            if not hasattr(self, "_drone_windows"):
+                self._drone_windows: list = []
+            self._drone_windows.append(win)
+            win.destroyed.connect(
+                lambda: self._drone_windows.remove(win)
+                if win in self._drone_windows else None
+            )
+            return
 
         scan_axes: list[str] = []
         button_count = 0
